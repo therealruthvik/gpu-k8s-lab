@@ -1,0 +1,7 @@
+aws_region     = "us-east-1"
+instance_type  = "g4dn.xlarge"
+use_spot       = true
+key_pair_name  = "your-key-name"        # matches ~/.ssh/your-key-name.pem
+your_ip        = "1.2.3.4/32"          # curl -4 ifconfig.me, add /32
+volume_size_gb = 60
+aws_profile    = "default"             # profile from ~/.aws/credentials
