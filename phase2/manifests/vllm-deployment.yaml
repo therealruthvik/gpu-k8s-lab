@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+      - name: vllm
+        image: vllm/vllm-openai:latest
+        args:
+        - "--model"
+        - "meta-llama/Llama-3.1-8B-Instruct"
+        - "--port"
+        - "8000"
+        - "--dtype"
+        - "float16"
+        - "--max-model-len"
+        - "2048"          # reduces KV cache — fits T4's 16GB
+        - "--gpu-memory-utilization"
+        - "0.90"
+        ports:
+        - containerPort: 8000
+        env:
+        - name: HUGGING_FACE_HUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: token
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            memory: "14Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            memory: "14Gi"
+        volumeMounts:
+        - name: model-cache
+          mountPath: /root/.cache/huggingface
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 300  # model download takes time
+          periodSeconds: 30
+          failureThreshold: 20
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 20Gi
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule

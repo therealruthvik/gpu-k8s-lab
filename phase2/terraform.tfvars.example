@@ -1,0 +1,7 @@
+aws_region       = "us-east-1"   # us-east-1 has best g4dn spot availability
+aws_profile      = "mlops"
+cluster_name     = "gpu-k8s-lab"
+instance_type    = "g4dn.xlarge"
+your_ip          = "1.2.3.4/32"  # curl -4 ifconfig.me, add /32
+hf_token         = "hf_..."      # huggingface.co/settings/tokens
+grafana_password = "changeme"
