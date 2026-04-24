@@ -1,6 +1,13 @@
 # gpu-k8s-lab
 
-Single-node GPU Kubernetes cluster on AWS EC2, provisioned with Terraform. Runs k3s with NVIDIA GPU Operator — ready for ML workloads in ~15 minutes.
+Two-phase GPU Kubernetes lab on AWS, provisioned with Terraform.
+
+| | Phase 1 | Phase 2 |
+|---|---|---|
+| **Cluster** | k3s (single EC2) | EKS (managed) |
+| **Workload** | bare GPU access | vLLM + Llama-3.1-8B |
+| **Observability** | none | Prometheus + Grafana + DCGM |
+| **Cost** | ~$0.16/hr spot | ~$0.29/hr (EKS + spot) |
 
 ## What gets created
 
@@ -89,3 +96,92 @@ Bootstrap (`scripts/bootstrap.sh`) runs at instance launch and logs to `/var/log
 ## State
 
 State is stored locally (`terraform.tfstate`). For shared/persistent use, enable the S3 backend in `providers.tf`.
+
+---
+
+## Phase 2 — EKS + vLLM + Observability
+
+### What gets created
+
+- EKS 1.31 cluster with g4dn.xlarge spot node group (AL2 GPU AMI — NVIDIA drivers pre-installed)
+- NVIDIA GPU Operator (`driver.enabled=false` — drivers already on AMI)
+- kube-prometheus-stack (Prometheus + Grafana) with DCGM dashboard auto-imported
+- vLLM serving `meta-llama/Llama-3.1-8B-Instruct` on NodePort 31000
+- Grafana on NodePort 32000
+
+### Additional prerequisites
+
+- AWS Service Quota: **Running Spot G and VT instances** ≥ 4 in target region
+- HuggingFace account with Llama 3.1 license accepted at `huggingface.co/meta-llama/Llama-3.1-8B-Instruct`
+- HuggingFace token (read scope) from `huggingface.co/settings/tokens`
+
+### Deploy
+
+```bash
+cd phase2
+cp terraform.tfvars.example terraform.tfvars
+# fill in your_ip, hf_token, aws_profile
+
+terraform init
+terraform apply   # ~25 min: EKS ~15min + node group ~5min + helm releases ~5min
+```
+
+### Wire kubeconfig and deploy vLLM
+
+```bash
+# After terraform apply completes:
+aws eks update-kubeconfig --name gpu-k8s-lab --region <region> --profile <profile>
+
+# Apply vLLM manifests (not managed by Terraform — iterate freely)
+kubectl apply -f manifests/vllm-deployment.yaml
+kubectl apply -f manifests/vllm-service.yaml
+
+# Watch vLLM pod start (model download takes ~10 min)
+kubectl logs -n vllm -l app=vllm -f
+```
+
+### Verify GPU
+
+```bash
+# GPU visible to Kubernetes
+kubectl get nodes -o custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu'
+
+# GPU Operator pods healthy
+kubectl get pods -n gpu-operator
+```
+
+### Load test → watch DCGM_FI_DEV_GPU_UTIL spike
+
+```bash
+chmod +x phase2/scripts/load-test.sh
+./phase2/scripts/load-test.sh 30   # 30 concurrent requests
+```
+
+Open Grafana at `http://<node-external-ip>:32000` → NVIDIA DCGM Exporter Dashboard → GPU Utilization.
+
+Get node IP:
+```bash
+kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}'
+```
+
+### Phase 2 architecture
+
+```
+phase2/
+├── main.tf                      — EKS module + GPU Operator + Prometheus helm releases
+├── modules/
+│   ├── networking/              — VPC with 2 public subnets across AZs (EKS requirement)
+│   └── eks/                     — EKS cluster + AL2 GPU spot node group + IAM
+└── manifests/
+    ├── vllm-deployment.yaml     — vLLM pod with GPU limit + HF token mount
+    └── vllm-service.yaml        — NodePort 31000
+```
+
+DCGM metrics flow: GPU Operator DCGM exporter → ServiceMonitor → Prometheus → Grafana dashboard `gnetId: 12239`.
+
+### Destroy
+
+```bash
+cd phase2
+terraform destroy
+```
